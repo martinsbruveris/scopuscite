@@ -1,0 +1,12 @@
+*.txt
+
+# Working files
+main.py
+main2.py
+.config
+
+# Data directories
+data/
+
+# Ignore for now, deal with it later
+docs/
