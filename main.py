@@ -107,9 +107,9 @@ def download_biology():
 
 def main():
 
-    # download_math()
+    download_math()
 
-    download_pami()
+    # download_pami()
 
     # download_physics()
 
