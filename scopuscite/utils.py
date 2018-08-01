@@ -33,10 +33,9 @@ def load_api_key():
 
     if (not config.has_section('Authentication')) or \
         (not valid_config(config)):
-        # Authentication with InstToken and Key from config file
+        # Authentication with Key from config file
         msg = ("config file misspecified. It must contain an "
-               "Authentication section with two entries: APIKey "
-               "and InstToken. Please correct.")
+               "Authentication section with entry APIKey.")
         raise ValueError(msg)
 
     return config['Authentication']['APIKey']
