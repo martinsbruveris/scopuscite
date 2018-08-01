@@ -1,6 +1,11 @@
+"""Library to query the Scopus API and efficiently retrieve author and
+publication information with local caching.
+"""
+
 import math
 import os, sys
 import pickle
+import time
 
 import numpy as np
 import pandas as pd
@@ -8,7 +13,7 @@ import pandas as pd
 import requests
 from humanize import naturalsize
 
-from scopus_utils import chunks, scopus_id_to_eid, eid_to_scopus_id
+from scopuscite.utils import chunks, scopus_id_to_eid, eid_to_scopus_id
 
 URI_SEARCH = 'https://api.elsevier.com/content/search/scopus'
 URI_AUTHOR = 'https://api.elsevier.com/content/author'
@@ -16,6 +21,9 @@ URI_CITATION = 'https://api.elsevier.com/content/abstract/citations'
 URI_ABSTRACT = 'https://api.elsevier.com/content/abstract/scopus_id/'
 
 class Scopus(object):
+    """Class to query the Scopus API with local caching to avoid redundant 
+    calls.
+    """
 
     def __init__(self, apikey, cache_name=None, cache_dir=None):
         self.CACHE_DIR_DEFAULT = 'local_cache'
@@ -142,18 +150,24 @@ class Scopus(object):
         for _ in range(10):
             r = requests.get(url, params=params)
 
+            #print(url)
+            #print(params)
+            #print(r.status_code)
+
             if r.status_code == 200:
                 js = r.json()
-                return js
+                return r, js
             elif not r.status_code in {503, 504}:
                 print(r)
                 print(r.headers)
-                return None
+                return r, None
+            
+            # time.sleep(1)
 
         print('Number of consecutive failed to Scopus exceeds 10.')
         print(r)
         print(r.headers)
-        return None
+        return r, None
 
     def check_api_response(self, r, js):
         '''
@@ -232,11 +246,17 @@ class Scopus(object):
                 'count': 200,
                 'start': 0}
 
-            r = requests.get(URI_SEARCH, params=par)
-            js = r.json()
+            r, js = self.call_api(URI_SEARCH, par)
+            if js is None:
+                print('Something went wrong when querying scopus')
+                return None
             
             num_results = int(js['search-results']['opensearch:totalResults'])
             retrieved = 0
+
+            if num_results == 0:
+                print('Nothing found. Check search query')
+                return set()
 
             authors = set()
             while retrieved < num_results:
@@ -252,8 +272,10 @@ class Scopus(object):
                 if retrieved >= num_results:
                     break
 
-                r = requests.get(URI_SEARCH, params=par)
-                js = r.json()
+                r, js = self.call_api(URI_SEARCH, par)
+                if js is None:
+                    print('Something went wrong when querying scopus.')
+                    return None
 
             print('Api calls remaining: {} / {}' \
                     .format(r.headers['X-RateLimit-Remaining'],
@@ -285,10 +307,10 @@ class Scopus(object):
             'httpAccept': 'application/json',
             'query': 'AU-ID(' + author_id + ')',
             'field': 'eid,author',
-            'count': 200,
+            'count': 50,
             'start': 0}
 
-        js = self.call_api(URI_SEARCH, params=par)
+        _, js = self.call_api(URI_SEARCH, params=par)
         if js is None:
             return None
         
@@ -312,7 +334,7 @@ class Scopus(object):
             if retrieved >= num_results:
                 break
 
-            js = self.call_api(URI_SEARCH, params=par)
+            _, js = self.call_api(URI_SEARCH, params=par)
             if js is None:
                 return None
         
@@ -358,8 +380,9 @@ class Scopus(object):
             print('Ignoring cache, reloading all results.')
             author_ids_new = author_ids
         
-        chunk_size = 10 # Limit set by Scopus API
+        chunk_size = 5 # Limit set by Scopus API is 10
         num_chunks = math.ceil(len(author_ids_new) / chunk_size)
+        res_count = 50
 
         # Papers with more than 100 authors
         num_many_authors = 0
@@ -374,10 +397,10 @@ class Scopus(object):
                 'query': search_query,
                 'httpAccept': 'application/json',
                 'field': 'eid,author',
-                'count': 200,
+                'count': res_count,
                 'start': 0}
 
-            js = self.call_api(URI_SEARCH, params=par)
+            r, js = self.call_api(URI_SEARCH, params=par)
             if js is None:
                 return
             
@@ -422,7 +445,7 @@ class Scopus(object):
                 if retrieved >= num_results:
                     break
 
-                js = self.call_api(URI_SEARCH, params=par)
+                r, js = self.call_api(URI_SEARCH, params=par)
                 if js is None:
                     return
 
@@ -575,22 +598,19 @@ class Scopus(object):
                 print('Chunk {} / {}.'.format(idx+1, num_chunks))
             par['scopus_id'] = ','.join(chunk)
             
-            r = requests.get(URI_CITATION, params=par)
-            js = r.json()
+            r, js = self.call_api(URI_CITATION, par)
+            if js is None:
+                print('Something went wrong.')
+                break;
             
             # Something went wrong
-            if 'service-error' in js:
-                if 'status' in js['service-error'] and \
-                    'statusCode' in js['service-error']['status'] and \
-                    js['service-error']['status']['statusCode'] \
-                        == 'RESOURCE_NOT_FOUND':
-                    res_not_found += 1
-                    continue
-                    
-                print('Something went wrong when calling Scopus API.')
-                print('Last response headers.')
-                print(r.headers)
-                break
+            if 'service-error' in js and \
+                'status' in js['service-error'] and \
+                'statusCode' in js['service-error']['status'] and \
+                js['service-error']['status']['statusCode'] \
+                    == 'RESOURCE_NOT_FOUND':
+                res_not_found += 1
+                continue
             
             cite_info = js['abstract-citations-response'] \
                         ['citeInfoMatrix']['citeInfoMatrixXML'] \
@@ -741,6 +761,7 @@ class Scopus(object):
             print('Chunk {} / {}.'.format(idx+1, num_chunks))
             par['author_id'] = ','.join(chunk)
             
+
             r = requests.get(URI_AUTHOR, params=par)
             js = r.json()
             
@@ -790,8 +811,7 @@ class Scopus(object):
 
         authors = authors.reindex(['name', 'first_name', 'last_name', 
             'affiliation', 'first_pub', 'last_pub', 'npubs', 'ncites', 
-            'ncited_by', 'ncoauthors', 'hindex', 'pcc', 'lcc', 
-            'cites_by_year'], axis=1)
+            'ncited_by', 'ncoauthors', 'hindex'], axis=1)
 
         print('Author info retrieved.')
         print('')
