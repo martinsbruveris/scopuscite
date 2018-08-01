@@ -1,9 +1,16 @@
+# Python
+*.pyc
+
+# vscode
+.vscode/
+
+# Various
 *.txt
 
 # Working files
-main.py
 main2.py
 .config
+*.ipynb
 
 # Data directories
 data/
