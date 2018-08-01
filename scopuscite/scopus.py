@@ -147,7 +147,8 @@ class Scopus(object):
                 pickle.dump(self.cache_author_info, fp)
 
     def call_api(self, url, params):
-        for _ in range(10):
+        max_calls = 3
+        for _ in range(max_calls):
             r = requests.get(url, params=params)
 
             #print(url)
@@ -157,14 +158,15 @@ class Scopus(object):
             if r.status_code == 200:
                 js = r.json()
                 return r, js
-            elif not r.status_code in {503, 504}:
-                print(r)
-                print(r.headers)
-                return r, None
+            # elif not r.status_code in {503, 504}:
+            #     print(r)
+            #     print(r.headers)
+            #     return r, None
             
             # time.sleep(1)
 
-        print('Number of consecutive failed to Scopus exceeds 10.')
+        print('Number of consecutive failed to Scopus exceeds {}.' \
+                .format(max_calls))
         print(r)
         print(r.headers)
         return r, None
@@ -380,83 +382,23 @@ class Scopus(object):
             print('Ignoring cache, reloading all results.')
             author_ids_new = author_ids
         
-        chunk_size = 5 # Limit set by Scopus API is 10
+        chunk_size = 20 # For caching purposes
         num_chunks = math.ceil(len(author_ids_new) / chunk_size)
-        res_count = 50
-
-        # Papers with more than 100 authors
-        num_many_authors = 0
         
         print('Authors to query Scopus: {}'.format(len(author_ids_new)))
         r = None
         for idx, chunk in enumerate(chunks(author_ids_new, chunk_size)):
-            search_query = ' OR '.join(['AU-ID(' + au_id + ')' \
-                                            for au_id in chunk])
-
-            par = {'apikey': self.apikey, 
-                'query': search_query,
-                'httpAccept': 'application/json',
-                'field': 'eid,author',
-                'count': res_count,
-                'start': 0}
-
-            r, js = self.call_api(URI_SEARCH, params=par)
-            if js is None:
-                return
             
-            num_results = int(js['search-results']['opensearch:totalResults'])
-            retrieved = 0
-            
-            print('Chunk {} / {}: {} results found' \
-                    .format(idx+1, num_chunks, num_results))
+            print('Chunk {} / {}'.format(idx+1, num_chunks))
 
             # This dict will be added to the cache
-            author_pub = {author_id : set() for author_id in chunk}
-            exists_long_author_list = False
-            
-            while retrieved < num_results:
-                entries = js['search-results']['entry']
-                
-                # Need to update this before manipulating entries
-                par['start'] += len(entries)
-                retrieved += len(entries)
+            author_pub = dict()
 
-                # Some entries don't have an eid entry...
-                entries = [ entry for entry in entries if 'eid' in entry ]
-
-                # Add to list of things to be donwloaded
-                scopus_ids |= {eid_to_scopus_id(entry['eid']) \
-                                    for entry in entries}
-
-                # Add entries to author_pub dict
-                for entry in entries:
-                    current_id = eid_to_scopus_id(entry['eid'])
-                    if 'message' in entry and 'truncated' in entry['message']:
-                        exists_long_author_list = True
-                        num_many_authors += 1
-                    elif not 'author' in entry:
-                        continue
-                    else:
-                        authors = {a['authid'] for a in entry['author']}
-
-                    for a in authors & set(chunk):
-                        author_pub[a].add(current_id)
-
-                if retrieved >= num_results:
-                    break
-
-                r, js = self.call_api(URI_SEARCH, params=par)
-                if js is None:
-                    return
-
-            # If some papers have more than 100 authors, we need to query the
-            # chunk one-by-one
-            if exists_long_author_list:
-                print('Query authors one-by-one.')
-                for a in chunk:
-                    pubs = self.get_single_author_publications(a)
-                    if pubs is not None:
-                        author_pub[a] = pubs
+            for a in chunk:
+                pubs = self.get_single_author_publications(a)
+                if pubs is not None:
+                    author_pub[a] = pubs
+                    scopus_ids |= pubs
 
             # Update cache
             self.cache_author_pub.update(author_pub)
@@ -470,8 +412,6 @@ class Scopus(object):
                     .format(r.headers['X-RateLimit-Remaining'],
                             r.headers['X-RateLimit-Limit']))
         print('Publications found: {}'.format(len(scopus_ids)))
-        print('Publications with more than 100 authors: {}' \
-                    .format(num_many_authors))
         print('')
         
         return scopus_ids
